@@ -250,6 +250,9 @@ function selectCharacter(char) {
     // Add glowing border effect
     container.classList.remove('border-border-dark');
     container.classList.add('border-primary', 'shadow-[0_0_40px_rgba(19,55,236,0.3)]');
+
+    // Recalculate stats as they may depend on the character (e.g. conditional effects)
+    calculateStats();
 }
 
 function getElementColor(el) {
@@ -392,7 +395,7 @@ function renderSlots() {
         if (equip) {
             // Filled Slot
             const card = document.createElement('div');
-            card.className = "relative size-24 rounded-xl bg-[#1e233b] border-2 border-primary/50 shadow-[0_0_15px_rgba(19,55,236,0.2)] flex items-center justify-center cursor-pointer hover:bg-[#252b46] transition-all group";
+            card.className = "relative size-24 rounded-xl bg-[#1e233b] border-2 border-primary/50 shadow-[0_0_15px_rgba(19,55,236,0.2)] flex items-center justify-center cursor-pointer hover:bg-[#252b46] transition-all group select-none";
 
             // Rarity Dot (Mock)
             const dot = document.createElement('div');
@@ -425,8 +428,9 @@ function renderSlots() {
 
             // Remove Button
             const removeBtn = document.createElement('div');
-            removeBtn.className = "absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-md z-10";
+            removeBtn.className = "absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-md z-10 hover:scale-110 cursor-pointer";
             removeBtn.innerHTML = '<span class="material-symbols-outlined text-[16px]">close</span>';
+            removeBtn.title = "Remove equipment";
             card.appendChild(removeBtn);
 
             // Add Click Listener to Remove
@@ -434,6 +438,34 @@ function renderSlots() {
                 e.stopPropagation(); // Prevent bubbling if needed
                 removeEquipment(index);
             });
+
+            // --- Multiplier Button Logic ---
+            // Check if equip has "per member" or "when ... is a battle member" effects
+            let hasPerMemberEffect = false;
+            if (equip.slots) {
+                const perMemberRegex = /per .* member|for each .* member|when .* is a battle member/i;
+                hasPerMemberEffect = equip.slots.some(s => s.effect && perMemberRegex.test(s.effect));
+            }
+
+            if (hasPerMemberEffect) {
+                const multiplierBtn = document.createElement('div');
+                const currentMultiplier = equip.multiplier !== undefined ? equip.multiplier : 0;
+
+                multiplierBtn.className = `equip-multiplier-btn ${currentMultiplier > 0 ? 'active' : ''}`;
+                multiplierBtn.title = "Battle Member Count (Click to toggle 0-3)";
+                multiplierBtn.innerHTML = `
+                    <span class="material-symbols-outlined text-[12px]">group</span>
+                    <span>x${currentMultiplier}</span>
+                `;
+
+                multiplierBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    toggleMultiplier(index);
+                };
+
+                card.appendChild(multiplierBtn);
+            }
+            // -------------------------------
 
             slotDiv.appendChild(card);
 
@@ -483,6 +515,8 @@ function addEquipment(equip) {
     // Find first empty slot
     const emptyIndex = selectedEquipments.indexOf(null);
     if (emptyIndex !== -1) {
+        // Init multiplier to 0
+        equip.multiplier = 0;
         selectedEquipments[emptyIndex] = equip;
         renderSlots();
         calculateStats();
@@ -498,6 +532,16 @@ function removeEquipment(index) {
     selectedEquipments.push(null);
     renderSlots();
     calculateStats();
+}
+
+function toggleMultiplier(index) {
+    const equip = selectedEquipments[index];
+    if (equip) {
+        if (equip.multiplier === undefined) equip.multiplier = 0;
+        equip.multiplier = (equip.multiplier + 1) % 4; // Cycle 0 -> 1 -> 2 -> 3 -> 0
+        renderSlots();
+        calculateStats();
+    }
 }
 
 // --- EQUIPMENT FUNCTIONS ---
@@ -779,33 +823,63 @@ function filterEquipments(char, equips) {
                 // This is tricky because slot.effect is "Base Strike Attack +10%"
                 // And selected key is "Base Strike Attack".
                 // Simple string includes is good enough.
+                // Strict Filter Logic
                 for (const effectKey of selectedEquipEffects) {
-                    // Check if simple string inclusion works
-                    // e.g. "Base Strike Attack" inside "Base Strike Attack +15%" -> Yes
-                    // "Base Critical" inside "Base Critical +10%" -> Yes
+                    const text = slot.effect;
+                    const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-                    // Helper: Handle "Strike & Blast"
-                    // If I select "Strike Attack", "Strike & Blast Attack" should probably count?
-                    // My STAT_MAPPING regex logic handles this parsing.
-                    // For simple filtering, string includes is approximate but fast.
+                    if (effectKey.startsWith("Base ")) {
+                        // For Base stats, we just need to ensure it includes the full Base string.
+                        // "Base Strike Attack" -> matches "Base Strike Attack" or "Base Strike & Blast Attack"
 
-                    // Special case handling for "Strike & Blast" to match "Strike Attack" filter?
-                    // If filter is "Strike Attack", and text is "Strike & Blast", technically it provides Strike Attack.
-                    // But strictly, string "Strike Attack" is NOT in "Strike & Blast Attack".
-                    // Users might expect it to show.
+                        if (text.includes(effectKey)) return true;
 
-                    // Let's rely on basic string matching first.
-                    if (slot.effect.includes(effectKey)) return true;
+                        // Handle Compounded Base Stats
+                        if (effectKey === "Base Strike Attack" && text.includes("Base Strike & Blast Attack")) return true;
+                        if (effectKey === "Base Blast Attack" && text.includes("Base Strike & Blast Attack")) return true;
+                        if (effectKey === "Base Strike Defense" && text.includes("Base Strike & Blast Defense")) return true;
+                        if (effectKey === "Base Blast Defense" && text.includes("Base Strike & Blast Defense")) return true;
 
-                    // Handle the "&" cases for better UX
-                    if (effectKey === "Strike Attack" && slot.effect.includes("Strike & Blast Attack")) return true;
-                    if (effectKey === "Blast Attack" && slot.effect.includes("Strike & Blast Attack")) return true;
-                    if (effectKey === "Strike Defense" && slot.effect.includes("Strike & Blast Defense")) return true;
-                    if (effectKey === "Blast Defense" && slot.effect.includes("Strike & Blast Defense")) return true;
-                    if (effectKey === "Base Strike Attack" && slot.effect.includes("Base Strike & Blast Attack")) return true;
-                    if (effectKey === "Base Blast Attack" && slot.effect.includes("Base Strike & Blast Attack")) return true;
-                    if (effectKey === "Base Strike Defense" && slot.effect.includes("Base Strike & Blast Defense")) return true;
-                    if (effectKey === "Base Blast Defense" && slot.effect.includes("Base Strike & Blast Defense")) return true;
+                    } else {
+                        // For Pure stats (e.g. "Strike Attack"), we MUST exclude "Base Strike Attack".
+                        // Use Negative Lookbehind: Match effectKey NOT preceded by "Base "
+
+                        // 1. Check strict match for the key itself
+                        // Regex: (?<!Base\s+)Strike Attack
+                        try {
+                            const strictRegex = new RegExp(`(?<!Base\\s+)${escape(effectKey)}`);
+                            if (strictRegex.test(text)) return true;
+                        } catch (e) {
+                            // Fallback for environment not supporting lookbehind (safe fallback)
+                            if (text.includes(effectKey)) {
+                                const idx = text.indexOf(effectKey);
+                                // Check previous 5 chars for "Base "
+                                const start = Math.max(0, idx - 5);
+                                const prefix = text.substring(start, idx);
+                                if (!prefix.includes("Base ")) return true;
+                            }
+                        }
+
+                        // 2. Handle Compounded Pure Stats (e.g. Strike & Blast Attack)
+                        // If searching "Strike Attack", we also accept "Strike & Blast Attack" (PURE)
+                        let compoundKey = "";
+                        if (effectKey === "Strike Attack" || effectKey === "Blast Attack") compoundKey = "Strike & Blast Attack";
+                        if (effectKey === "Strike Defense" || effectKey === "Blast Defense") compoundKey = "Strike & Blast Defense";
+
+                        if (compoundKey) {
+                            try {
+                                const strictCompoundRegex = new RegExp(`(?<!Base\\s+)${escape(compoundKey)}`);
+                                if (strictCompoundRegex.test(text)) return true;
+                            } catch (e) {
+                                if (text.includes(compoundKey)) {
+                                    const idx = text.indexOf(compoundKey);
+                                    const start = Math.max(0, idx - 5);
+                                    const prefix = text.substring(start, idx);
+                                    if (!prefix.includes("Base ")) return true;
+                                }
+                            }
+                        }
+                    }
                 }
                 return false;
             });
@@ -882,18 +956,38 @@ function calculateStats() {
 
     const otherEffects = [];
 
-    selectedEquipments.forEach(equip => {
+    selectedEquipments.forEach((equip, equipIndex) => {
         if (!equip || !equip.slots) return;
 
-        equip.slots.forEach(slot => {
+        equip.slots.forEach((slot, slotIndex) => {
             const effectText = slot.effect;
             if (!effectText) return;
 
             // --- 0. Handle "OR" Logic ---
             const parts = effectText.split(/- OR -/i);
             const isConditional = parts.length > 1;
+            let partsToProcess = parts;
 
-            parts.forEach(part => {
+            if (isConditional) {
+                // Initialize selection state if not present
+                if (!equip.selections) equip.selections = {};
+                if (equip.selections[slotIndex] === undefined) equip.selections[slotIndex] = 0; // Default to first option
+
+                const selectedIndex = equip.selections[slotIndex];
+
+                // Track for UI
+                otherEffects.push({
+                    type: 'selector',
+                    options: parts.map(p => p.trim()),
+                    selectedIndex: selectedIndex,
+                    equipIndex: equipIndex,
+                    slotIndex: slotIndex
+                });
+
+                partsToProcess = [parts[selectedIndex]];
+            }
+
+            partsToProcess.forEach(part => {
                 let remainingText = part;
 
                 // 1. Helper to Process Matches
@@ -907,15 +1001,119 @@ function calculateStats() {
                         keys.forEach(k => {
                             if (stats[k] !== undefined) {
                                 stats[k] += value;
-                                if (isConditional) {
-                                    conditionalStats[k] = true;
-                                }
                             }
                         });
 
                         return "";
                     });
                 };
+
+
+                // --- NEW: Handle "Per Member" / "When ... is member" Logic with Multiplier ---
+                // We check this BEFORE standard processing to consume the text.
+                const multiplier = equip.multiplier !== undefined ? equip.multiplier : 0;
+
+                // --- NEW: Handle "if this character is" Logic ---
+                const ifRegex = /([+]?\d+(?:\.\d+)?)(?:\s*~\s*([+]?\d+(?:\.\d+)?))?\s*%\s*to\s*([^.]+?)\s*if\s*this character is\s*"([^"]+)"/gi;
+
+                remainingText = remainingText.replace(ifRegex, (match, val1, val2, statName, conditionTag) => {
+                    let value = parseFloat(val1);
+                    if (val2 && !isNaN(parseFloat(val2))) value = parseFloat(val2);
+
+                    const cleanCondition = conditionTag.replace(/^(Tag: |Episode: |Element: |Character: )/, "");
+
+                    // Check if current character matches the condition
+                    // We need `currentSelectedCharacter` which is global
+                    let hasTag = false;
+                    if (currentSelectedCharacter && currentSelectedCharacter.visual_tags) {
+                        hasTag = currentSelectedCharacter.visual_tags.includes(cleanCondition);
+                        // Fallback for Name match if not in tags (sometimes names are used like "Broly")
+                        if (!hasTag && currentSelectedCharacter.name.includes(cleanCondition)) hasTag = true;
+                    }
+
+                    if (hasTag) {
+                        const textIsBase = statName.includes("Base ");
+                        const keywords = ["Strike", "Blast", "Attack", "Defense", "Health", "Ki", "Damage", "Critical", "Restoration", "Inflicted", "Special", "Ultimate", "Move"];
+
+                        for (const key in STAT_MAPPING) {
+                            if (key.includes("Base ") !== textIsBase) continue;
+
+                            let matchKey = true;
+                            for (const word of keywords) {
+                                if (key.includes(word) && !statName.includes(word)) {
+                                    matchKey = false;
+                                    break;
+                                }
+                            }
+                            if (matchKey) {
+                                stats[key] += value;
+                            }
+                        }
+                        return ""; // Consume text
+                    } else {
+                        return match; // Keep text for Other Effects
+                    }
+                });
+
+                // Regex for "scaling" effects (Per Member)
+                // e.g. "8.00 ~ 12.50 % to Strike & Blast Defense per 'Tag: Son Family' battle member."
+                // e.g. "for each 'Tag: Son Family' battle member"
+                const scalingRegex = /([+]?\d+(?:\.\d+)?)(?:\s*~\s*([+]?\d+(?:\.\d+)?))?\s*%\s*to\s*([^.]+?)\s*(?:per|for each)\s*(?:.*?)\s*member/gi;
+
+                remainingText = remainingText.replace(scalingRegex, (match, val1, val2, statName) => {
+                    let value = parseFloat(val1);
+                    if (val2 && !isNaN(parseFloat(val2))) value = parseFloat(val2);
+
+                    const boostedValue = value * multiplier;
+
+                    // Map stat name to keys
+                    // Logic from existing stats mapping needed here, but statName might be "Strike & Blast Defense"
+                    // We can reuse the key mapping logic
+
+                    for (const key in STAT_MAPPING) {
+                        // Check if key is inside the statName text (e.g. "Strike Defense" in "Strike & Blast Defense")
+                        // Standardize check
+                        const cleanKey = key.replace("Base ", ""); // stats usually say "to Strike Attack", not "to Base Strike Attack" in these sentences?
+                        // Let's check both
+
+                        if (statName.includes(key) || statName.includes(cleanKey)) {
+                            // Correct mapping check:
+                            // If statName is "Strike & Blast Defense", it matches "Strike Defense" and "Blast Defense".
+                            if (stats[key] !== undefined) {
+                                // Basic duplicate check for "Strike" matching "Strike Defense" and "Strike Attack"
+                                // unique identifiers: "Defense", "Attack"
+                                if (key.includes("Defense") && !statName.includes("Defense")) continue;
+                                if (key.includes("Attack") && !statName.includes("Attack")) continue;
+
+                                stats[key] += boostedValue;
+                            }
+                        }
+                    }
+                    return ""; // Consume
+                });
+
+                // Regex for "threshold" effects (When ... is a battle member)
+                // e.g. "8.00 ~ 20.00 % to Blast Defense when 'Tag: Saiyan' and 'Tag: Potara' is a battle member."
+                const thresholdRegex = /([+]?\d+(?:\.\d+)?)(?:\s*~\s*([+]?\d+(?:\.\d+)?))?\s*%\s*to\s*([^.]+?)\s*when\s*(?:.*?)\s*is a battle member/gi;
+
+                remainingText = remainingText.replace(thresholdRegex, (match, val1, val2, statName) => {
+                    let value = parseFloat(val1);
+                    if (val2 && !isNaN(parseFloat(val2))) value = parseFloat(val2);
+
+                    // Threshold logic: Max if multiplier > 0
+                    const boostedValue = (multiplier > 0) ? value : 0;
+
+                    for (const key in STAT_MAPPING) {
+                        const cleanKey = key.replace("Base ", "");
+                        if (statName.includes(key) || statName.includes(cleanKey)) {
+                            if (key.includes("Defense") && !statName.includes("Defense")) continue;
+                            if (key.includes("Attack") && !statName.includes("Attack")) continue;
+                            stats[key] += boostedValue;
+                        }
+                    }
+                    return ""; // Consume
+                });
+
 
                 // 2. Handle Compounds
                 processMatch(/Base Strike & Blast Attack\s*([+]?\d+(?:\.\d+)?)(?:\s*~\s*([+]?\d+(?:\.\d+)?))?\s*%/gi, ["Base Strike Attack", "Base Blast Attack"]);
@@ -936,7 +1134,17 @@ function calculateStats() {
 
                 if (remainingText.length > 2) {
                     if (!/^[-.]+$/.test(remainingText)) {
-                        otherEffects.push(remainingText);
+                        // Only add to otherEffects if NOT conditional (because conditional ones added 'selector' object above)
+                        // OR if it's the selected part residue?
+                        // The prompt says: "o efeito aparece no 'Other Effects' com um botão... e se posivel por o effeito selecionado em 'Stats Analysis'"
+                        // So we want the selector UI in Other Effects.
+                        // But if there is residue text (e.g. non-stat text) in the selected part, we should probably display it too?
+                        // Currently 'selector' object contains the full raw text options.
+                        // So we probably don't need to push residue for the conditional case, 
+                        // because the selector UI will show the full text of the option.
+                        if (!isConditional) {
+                            otherEffects.push(remainingText);
+                        }
                     }
                 }
             });
@@ -1014,15 +1222,72 @@ function updateStatsUI(stats, conditionalStats, otherEffects) {
         container.innerHTML = '';
         const uniqueEffects = [...new Set(otherEffects)]; // Dedup
 
-        uniqueEffects.forEach(text => {
+        uniqueEffects.forEach(item => {
             const div = document.createElement('div');
-            div.className = "bg-[#151a2d] p-3 rounded border border-border-dark/50 text-sm text-[#929bc9] leading-relaxed";
-            div.innerText = text;
+            div.className = "bg-[#151a2d] p-3 rounded border border-border-dark/50 text-sm text-[#929bc9] leading-relaxed mb-2";
+
+            if (typeof item === 'object' && item.type === 'selector') {
+                // Render Selector
+                div.className += " flex flex-col gap-2";
+
+                const title = document.createElement('div');
+                title.className = "text-xs font-bold text-gray-500 uppercase tracking-wider";
+                title.innerText = "Select Effect:";
+                div.appendChild(title);
+
+                const optionText = document.createElement('p');
+                optionText.className = "text-white";
+                optionText.innerText = item.options[item.selectedIndex];
+                div.appendChild(optionText);
+
+                // Toggle Button
+                const btn = document.createElement('button');
+                btn.className = "self-start flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold bg-[#1e233b] border border-[#3e477a] text-[#929bc9] hover:text-white hover:border-primary transition-all";
+
+                // Icon
+                btn.innerHTML = `
+                    <span class="material-symbols-outlined text-[14px]">swap_horiz</span>
+                    <span>Switch Option</span>
+                `;
+
+                btn.onclick = () => {
+                    toggleEquipEffectSelection(item.equipIndex, item.slotIndex);
+                };
+
+                div.appendChild(btn);
+
+            } else {
+                // String / Regular Effect
+                div.innerText = item;
+            }
             container.appendChild(div);
         });
 
         if (uniqueEffects.length === 0) {
             container.innerHTML = '<span class="text-xs text-gray-600 italic">No complex effects.</span>';
+        }
+    }
+}
+
+
+function toggleEquipEffectSelection(equipIndex, slotIndex) {
+    const equip = selectedEquipments[equipIndex];
+    if (equip && equip.selections && equip.selections[slotIndex] !== undefined) {
+        // Cycle between 0 and 1 (assuming max 2 options for now, but split gives array)
+        // We need to know how many options there are. 
+        // But here we don't have the options array easily.
+        // However, standard OR is 2 parts.
+        // Let's assume 2 for simplicity or check effect string again?
+        // Checking effect string is safer.
+
+        const slot = equip.slots[slotIndex];
+        if (slot && slot.effect) {
+            const parts = slot.effect.split(/- OR -/i);
+            const numOptions = parts.length;
+            if (numOptions > 1) {
+                equip.selections[slotIndex] = (equip.selections[slotIndex] + 1) % numOptions;
+                calculateStats();
+            }
         }
     }
 }
